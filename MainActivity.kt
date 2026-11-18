@@ -25,7 +25,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -116,7 +115,6 @@ fun parseOpf(bytes: ByteArray): Meta {
             ev = p.next()
         }
     } catch (e: Exception) {
-        // повертаємо те, що встигли прочитати
     }
     val orig = altScript ?: fileAs?.let { reorderFileAs(it) }
     return Meta(title, author, series, number, orig?.takeIf { it.isNotBlank() && it != author })
@@ -147,7 +145,7 @@ fun parseFb2(ctx: Context, uri: Uri): Meta {
     var sLast: String? = null
     var sInAuthor = false
     var sDone = false
-    var sect = 0 // 1 = title-info, 2 = src-title-info (оригінал)
+    var sect = 0
     try {
         ctx.contentResolver.openInputStream(uri)?.use { raw ->
             val p = Xml.newPullParser()
@@ -190,7 +188,6 @@ fun parseFb2(ctx: Context, uri: Uri): Meta {
             }
         }
     } catch (e: Exception) {
-        // повертаємо те, що встигли прочитати
     }
     val author = listOfNotNull(first, last).joinToString(" ").ifBlank { null }
     val orig = listOfNotNull(sFirst, sLast).joinToString(" ").ifBlank { null }
@@ -228,7 +225,6 @@ fun displayName(ctx: Context, uri: Uri): String {
     return uri.lastPathSegment ?: ""
 }
 
-// Повертає список пар: Pair(Uri_файлу, DocumentFile_батьківська_тека)
 data class FileItem(val uri: Uri, val name: String, val parentDir: DocumentFile)
 
 fun listFilesWithParents(ctx: Context, treeUri: Uri, recursive: Boolean): List<FileItem> {
@@ -249,7 +245,6 @@ fun listFilesWithParents(ctx: Context, treeUri: Uri, recursive: Boolean): List<F
     return res
 }
 
-// Функція для розкладання файлів за теками форматів
 fun sortFilesByFormat(ctx: Context, rootUri: Uri, recursive: Boolean, onLog: (String) -> Unit): Int {
     val rootDir = DocumentFile.fromTreeUri(ctx, rootUri) ?: return 0
     val allFiles = listFilesWithParents(ctx, rootUri, recursive)
@@ -261,21 +256,17 @@ fun sortFilesByFormat(ctx: Context, rootUri: Uri, recursive: Boolean, onLog: (St
         val dot = fileName.lastIndexOf('.')
         if (dot <= 0) continue
         val ext = fileName.substring(dot + 1).uppercase()
-        
-        // Дозволяємо сортувати будь-які файли (або змінити фільтр за потреби)
         val targetFolderName = if (ext.isBlank()) "NO_EXT" else ext
 
-        // Перевіряємо, чи файл вже лежить у цільовій теці формату в корені
-        if (item.parentDir.uri == rootDir.uri) continue
-        if (item.parentDir.name?.uppercase() == targetFolderName && item.parentDir.parentFile?.uri == rootDir.uri) continue
+        if (item.parentDir.name?.uppercase() == targetFolderName && item.parentDir.parentFile?.uri == rootDir.uri) {
+            continue
+        }
 
-        // Знаходимо або створюємо теку формату в корені
         val targetDir = createdFoldersCache.getOrPut(targetFolderName) {
             rootDir.findFile(targetFolderName)?.takeIf { it.isDirectory }
                 ?: rootDir.createDirectory(targetFolderName)!!
         }
 
-        // Уникаємо конфліктів імен у цільовій теці
         var safeName = fileName
         var counter = 1
         val baseName = fileName.substringBeforeLast('.')
@@ -287,11 +278,9 @@ fun sortFilesByFormat(ctx: Context, rootUri: Uri, recursive: Boolean, onLog: (St
             try {
                 DocumentsContract.renameDocument(ctx.contentResolver, item.uri, safeName)
             } catch (e: Exception) {
-                // пропускаємо при помилці перейменування конфлікту
             }
         }
 
-        // Переміщуємо файл через DocumentsContract
         try {
             val moved = DocumentsContract.moveDocument(
                 ctx.contentResolver,
@@ -301,16 +290,14 @@ fun sortFilesByFormat(ctx: Context, rootUri: Uri, recursive: Boolean, onLog: (St
             )
             if (moved != null) {
                 movedCount++
-                onLog("[$targetFolderName] <- $fileName")
+                onLog("[$targetFolderName] <-$fileName")
             }
         } catch (e: Exception) {
-            // помилка переміщення
         }
     }
     return movedCount
 }
 
-// Старий метод для звичайного пошуку книжок (для перейменування)
 fun listFiles(ctx: Context, tree: Uri, recursive: Boolean): List<Pair<Uri, String>> {
     val res = mutableListOf<Pair<Uri, String>>()
     fun walk(docId: String) {
@@ -397,7 +384,8 @@ fun extractText(ctx: Context, uri: Uri, ext: String, maxChars: Int = 6000): Stri
                 }
             }
         }
-    } catch (e: Exception) {}
+    } catch (e: Exception) {
+    }
     return sb.toString().take(maxChars)
 }
 
@@ -458,39 +446,17 @@ fun lookupTitle(query: String): String? {
         val json = org.json.JSONObject(httpGet("https://www.googleapis.com/books/v1/volumes?q=$q&maxResults=1&printType=books"))
         val t = json.optJSONArray("items")?.optJSONObject(0)?.optJSONObject("volumeInfo")?.optString("title")
         if (!t.isNullOrBlank()) return t.trim()
-    } catch (e: Exception) {}
+    } catch (e: Exception) {
+    }
     try {
         val json = org.json.JSONObject(httpGet("https://openlibrary.org/search.json?q=$q&limit=1&fields=title"))
         val t = json.optJSONArray("docs")?.optJSONObject(0)?.optString("title")
         if (!t.isNullOrBlank()) return t.trim()
-    } catch (e: Exception) {}
+    } catch (e: Exception) {
+    }
     return null
 }
 
 fun onlineQuery(b: Book): String =
     (b.base.replace(Regex("\\(\\d+\\)"), " ").replace(Regex("[_\\-]+"), " ") + " " + (b.meta.author ?: ""))
-        .replace(Regex("\\s+"), " ").trim()
-
-val junkRegex = Regex("(?i)^(urn:uuid:)?[0-9a-f-]{16,}$")
-
-fun looksLikeJunk(t: String): Boolean {
-    val x = t.trim()
-    if (junkRegex.matches(x)) return true
-    return x.lowercase() in setOf("unknown", "untitled", "title", "без назви", "невідомо", "невідомий")
-}
-
-fun titleIsBad(b: Book): Boolean {
-    val t = b.meta.title
-    return t.isNullOrBlank() || looksLikeJunk(t)
-}
-
-fun newName(b: Book, s: Settings, onlineTitle: String? = null): String {
-    val parts = s.order.mapNotNull { p ->
-        when (p) {
-            Part.SERIES -> if (!b.isSeries) null else listOfNotNull(
-                if (s.useSeriesName) b.meta.series?.takeIf { it.isNotBlank() } else null,
-                if (s.useNumber) pad(b.meta.number) else null
-            ).joinToString(" ").ifBlank { null }
-            Part.TITLE -> if (s.useTitle) (b.meta.title?.takeIf { it.isNotBlank() && !looksLikeJunk(it) } ?: onlineTitle ?: b.base) else null
-            Part.AUTHOR -> if (!s.useAuthor) null else {
-                val orig = if (
+    
